@@ -396,51 +396,32 @@ def remove_auxiliary_columns(df_merged):
 
     return df_merged
 
-def process_dataset():
+def process_dataset(df_transactions, df_pays, df_sellers):
     """
     Função principal que processa todo o dataset.
     """
-    # Carrega os datasets
-    df_pays, df_sellers, df_transactions = load_datasets()
-
     # Realiza o merge inicial
     df_merged = merge_datasets(df_transactions, df_pays, df_sellers)
-    print("Realizado merge inicial.")
 
     # Adiciona todas as features
     df_merged = add_card_frequency_features(df_merged)
-    print("Adicionadas features de frequência do cartão.")
     df_merged = add_card_amount_features(df_merged)
-    print("Adicionadas features de valor do cartão.")
     df_merged = add_card_time_features(df_merged)
-    print("Adicionadas features de tempo do cartão.")
     df_merged = add_terminal_frequency_features(df_merged)
-    print("Adicionadas features de frequência do terminal.")
     df_merged = add_terminal_statistics_features(df_merged)
-    print("Adicionadas features estatísticas do terminal.")
     df_merged = add_terminal_card_features(df_merged)
-    print("Adicionadas features de cartão por terminal.")
     df_merged = add_terminal_time_features(df_merged)
-    print("Adicionadas features de tempo do terminal.")
     df_merged = add_distance_features(df_merged)
-    print("Adicionadas features de distância.")
     df_merged = add_period_features(df_merged)
-    print("Adicionadas features de período do dia.")
     df_merged = add_fraud_features(df_merged)
-    print("Adicionadas features de fraude.")
     df_merged = add_card_bin_features(df_merged)
-    print("Adicionadas features de BIN do cartão.")
     df_merged = add_city_features(df_merged)
-    print("Adicionadas features de cidade.")
 
     # Remove colunas auxiliares
     df_merged = remove_auxiliary_columns(df_merged)
-    print("Removidas colunas auxiliares.")
-    # Salva o resultado
-    df_merged.to_csv('../data/merged_dataset.csv', index=False)
-    print("Dataset processado e salvo em 'merged_dataset.csv'.")
 
     return df_merged
 
 if __name__ == "__main__":
-    df_result = process_dataset()
+    df_pays, df_sellers, df_transactions = load_datasets()
+    df_result = process_dataset(df_transactions, df_pays, df_sellers)

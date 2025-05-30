@@ -1,13 +1,14 @@
 import os
 from io import BytesIO
-from datetime import datetime
-from typing import List
+from datetime import datetime, UTC
+from typing import List, Optional
 from contextlib import asynccontextmanager
 
 import pandas as pd
 import joblib
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Query
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic_settings import BaseSettings
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -17,7 +18,6 @@ class Settings(BaseSettings):
     mongodb_uri: str = "mongodb+srv://admin:admin@projeficaz.fsc9tus.mongodb.net/"
     mongodb_db: str = "meli_logs"
     model_path: str = "model.pkl"
-    data_folder: str = "data"
     model_version: str = "1.0.0"
 
     class Config:
@@ -29,22 +29,29 @@ settings = Settings()
 async def lifespan(app: FastAPI):
     app.mongodb_client = AsyncIOMotorClient(settings.mongodb_uri)
     app.db = app.mongodb_client[settings.mongodb_db]
-    os.makedirs(settings.data_folder, exist_ok=True)
     yield
     app.mongodb_client.close()
 
 app = FastAPI(title="Meli Selecao da Fraude API", lifespan=lifespan)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
 
 async def get_logs_collection():
     return app.db["logs"]
 
 model = joblib.load(settings.model_path)
 
-def save_file_and_read(upload: UploadFile, name: str) -> pd.DataFrame:
-    path = os.path.join(settings.data_folder, name)
-    with open(path, "wb") as f:
-        f.write(upload.file.read())
-    return pd.read_feather(path)
+async def read_feather_file(file: UploadFile) -> pd.DataFrame:
+    contents = await file.read()
+    buffer = BytesIO(contents)
+    return pd.read_feather(buffer)
 
 def log_predictions(
     records: List[dict],
@@ -64,11 +71,11 @@ async def predict_single(
     transactions: UploadFile = File(...),
     logs_collection=Depends(get_logs_collection),
 ):
-    df_payers = save_file_and_read(payers, "payers.feather")
-    df_sellers = save_file_and_read(sellers, "sellers.feather")
-    df_txns   = save_file_and_read(transactions, "transactions.feather")
+    df_payers = await read_feather_file(payers)
+    df_sellers = await read_feather_file(sellers)
+    df_txns = await read_feather_file(transactions)
 
-    df_proc = process_dataset(df_payers, df_sellers, df_txns)
+    df_proc = process_dataset(df_txns, df_payers, df_sellers)
 
     if df_proc.shape[0] != 1:
         raise HTTPException(400, "Espere exatamente 1 transação para /single")
@@ -80,7 +87,7 @@ async def predict_single(
         **df_proc.iloc[0].to_dict(),
         "prediction": pred,
         "probability": prob,
-        "timestamp": datetime.utcnow(),
+        "timestamp": datetime.now(UTC),
         "model_version": settings.model_version,
     }
     await logs_collection.insert_one(log_record)
@@ -98,10 +105,10 @@ async def predict_batch(
     transactions: UploadFile = File(...),
     logs_collection=Depends(get_logs_collection),
 ):
-    df_payers = save_file_and_read(payers, "payers.feather")
-    df_sellers = save_file_and_read(sellers, "sellers.feather")
-    df_txns   = save_file_and_read(transactions, "transactions.feather")
-    df_proc   = process_dataset(df_payers, df_sellers, df_txns)
+    df_payers = await read_feather_file(payers)
+    df_sellers = await read_feather_file(sellers)
+    df_txns = await read_feather_file(transactions)
+    df_proc = process_dataset(df_txns, df_payers, df_sellers)
 
     X = df_proc.values
     preds = model.predict(X)
@@ -117,7 +124,7 @@ async def predict_batch(
             **row.to_dict(),
             "prediction": int(preds[i]),
             "probability": float(probs[i]),
-            "timestamp": datetime.utcnow(),
+            "timestamp": datetime.now(UTC),
             "model_version": settings.model_version,
         }
         records.append(rec)
@@ -132,3 +139,32 @@ async def predict_batch(
         media_type="application/octet-stream",
         headers={"Content-Disposition": "attachment; filename=results.feather"},
     )
+
+@app.get("/logs")
+async def get_logs(
+    start_date: Optional[datetime] = Query(None, description="Start date for filtering logs"),
+    end_date: Optional[datetime] = Query(None, description="End date for filtering logs"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of logs to return"),
+    logs_collection=Depends(get_logs_collection),
+):
+    query = {}
+    
+    if start_date or end_date:
+        query["timestamp"] = {}
+        if start_date:
+            query["timestamp"]["$gte"] = start_date
+        if end_date:
+            query["timestamp"]["$lte"] = end_date
+
+    cursor = logs_collection.find(query).sort("timestamp", -1).limit(limit)
+    logs = await cursor.to_list(length=limit)
+    
+    # Convert ObjectId to string for JSON serialization
+    for log in logs:
+        log["_id"] = str(log["_id"])
+    
+    return logs
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
