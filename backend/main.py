@@ -8,7 +8,7 @@ import pandas as pd
 import joblib
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from dataset import process_dataset
