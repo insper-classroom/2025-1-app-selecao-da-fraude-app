@@ -13,10 +13,19 @@ def load_datasets():
 
 def merge_datasets(df_transactions, df_pays, df_sellers):
     """
-    Realiza o merge dos três dataframes.
+    Realiza o merge dos três dataframes, mantendo todas as transações e adicionando informações
+    dos payers e sellers quando disponíveis.
     """
     df_merged = pd.merge(df_transactions, df_pays, left_on='card_id', right_on='card_hash', how='left')
+    
     df_merged = pd.merge(df_merged, df_sellers, on='terminal_id', how='left')
+    
+    for col in df_merged.columns:
+        if df_merged[col].dtype == 'object':
+            df_merged[col] = df_merged[col].fillna('Desconhecido')
+        elif df_merged[col].dtype in ['int64', 'float64']:
+            df_merged[col] = df_merged[col].fillna(0)
+    
     return df_merged
 
 def add_card_frequency_features(df_merged):
@@ -400,10 +409,8 @@ def process_dataset(df_transactions, df_pays, df_sellers):
     """
     Função principal que processa todo o dataset.
     """
-    # Realiza o merge inicial
     df_merged = merge_datasets(df_transactions, df_pays, df_sellers)
 
-    # Adiciona todas as features
     df_merged = add_card_frequency_features(df_merged)
     df_merged = add_card_amount_features(df_merged)
     df_merged = add_card_time_features(df_merged)
@@ -417,8 +424,34 @@ def process_dataset(df_transactions, df_pays, df_sellers):
     df_merged = add_card_bin_features(df_merged)
     df_merged = add_city_features(df_merged)
 
-    # Remove colunas auxiliares
     df_merged = remove_auxiliary_columns(df_merged)
+
+    expected_features = [
+        'tx_amount', 'card_bin', 'latitude', 'longitude',
+        'card_daily_transaction_count', 'card_weekly_transaction_count',
+        'card_hourly_transaction_count', 'card_6h_transaction_count',
+        'card_mean_transaction_amount', 'card_std_transaction_amount',
+        'card_daily_avg_transaction_amount', 'card_daily_transaction_amount_std',
+        'card_weekly_avg_transaction_amount', 'card_weekly_transaction_amount_std',
+        'card_hours_since_last_transaction', 'card_hours_since_first_transaction',
+        'card_days_since_first_transaction', 'terminal_daily_transaction_count',
+        'terminal_weekly_transaction_count', 'terminal_hourly_transaction_count',
+        'terminal_6h_transaction_count', 'terminal_avg_daily_transaction_count',
+        'terminal_std_daily_transaction_count', 'terminal_avg_weekly_transaction_count',
+        'terminal_std_weekly_transaction_count', 'terminal_daily_distinct_card_count',
+        'terminal_weekly_distinct_card_count', 'card_terminal_transaction_count',
+        'terminal_seconds_since_first_operation', 'dist_to_first_km',
+        'period_of_day', 'card_previous_reported_fraud_count',
+        'card_previous_reported_transactional_fraud_count',
+        'card_previous_reported_non_transactional_fraud_count'
+    ]
+
+    for feature in expected_features:
+        if feature not in df_merged.columns:
+            print(f"Feature {feature} not found in dataframe")
+            df_merged[feature] = 0
+
+    df_merged = df_merged[expected_features]
 
     return df_merged
 

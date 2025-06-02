@@ -63,6 +63,7 @@ class SinglePrediction(BaseSettings):
     transaction_id: str
     prediction: int
     probability: float
+    is_fraud: bool
 
 @app.post("/predict/single", response_model=SinglePrediction)
 async def predict_single(
@@ -79,9 +80,14 @@ async def predict_single(
 
     if df_proc.shape[0] != 1:
         raise HTTPException(400, "Espere exatamente 1 transação para /single")
-    X = df_proc.values
-    pred = int(model.predict(X)[0])
-    prob = float(model.predict_proba(X)[0, pred])
+    
+    print(f"Number of features: {df_proc.shape[1]}")
+    
+    # Keep as DataFrame for model prediction
+    pred = int(model.predict(df_proc)[0])
+    prob = float(model.predict_proba(df_proc)[0, pred])
+
+    print(f"Prediction: {pred}, Probability: {prob}")
 
     log_record = {
         **df_proc.iloc[0].to_dict(),
@@ -89,6 +95,7 @@ async def predict_single(
         "probability": prob,
         "timestamp": datetime.now(UTC),
         "model_version": settings.model_version,
+        "is_fraud": bool(pred)
     }
     await logs_collection.insert_one(log_record)
 
@@ -96,6 +103,7 @@ async def predict_single(
         "transaction_id": str(df_txns.iloc[0].get("transaction_id", "")),
         "prediction": pred,
         "probability": prob,
+        "is_fraud": bool(pred)
     }
 
 @app.post("/predict/batch")
@@ -114,10 +122,16 @@ async def predict_batch(
     preds = model.predict(X)
     probs = model.predict_proba(X).max(axis=1)
 
-    df_out = df_txns.copy()
-    df_out["prediction"] = preds
-    df_out["probability"] = probs
+    # Create dictionary with transaction IDs as keys
+    results = {}
+    for i, tx_id in enumerate(df_txns['transaction_id']):
+        results[str(tx_id)] = {
+            "prediction": int(preds[i]),
+            "probability": float(probs[i]),
+            "is_fraud": bool(preds[i])
+        }
 
+    # Log predictions
     records = []
     for i, row in df_proc.iterrows():
         rec = {
@@ -130,15 +144,7 @@ async def predict_batch(
         records.append(rec)
     await log_predictions(records, logs_collection)
 
-    buffer = BytesIO()
-    df_out.reset_index(drop=True).to_feather(buffer)
-    buffer.seek(0)
-
-    return StreamingResponse(
-        buffer,
-        media_type="application/octet-stream",
-        headers={"Content-Disposition": "attachment; filename=results.feather"},
-    )
+    return results
 
 @app.get("/logs")
 async def get_logs(
