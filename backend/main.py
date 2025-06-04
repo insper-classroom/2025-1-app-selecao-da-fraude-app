@@ -1,9 +1,7 @@
-import os
 from io import BytesIO
 from datetime import datetime, UTC
 from typing import List, Optional
 from contextlib import asynccontextmanager
-import asyncio
 import time
 from fastapi import BackgroundTasks
 from sqlalchemy.pool import QueuePool
@@ -20,7 +18,6 @@ from pydantic_settings import BaseSettings
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
-import asyncio
 
 from dataset import process_dataset
 
@@ -40,11 +37,13 @@ class Log(Base):
 
 class Settings(BaseSettings):
     postgres_uri: str = "postgresql://neondb_owner:npg_2rLXGsuf0CVU@ep-restless-bush-ac8o7zoh-pooler.sa-east-1.aws.neon.tech/neondb?sslmode=require"
-    model_path: str = "model.pkl"
+    model_path: str = "xgb_smote_model.pkl"
     model_version: str = "1.0.0"
     max_retries: int = 3
     pool_size: int = 5
     max_overflow: int = 10
+    generate_csv: bool = False
+    generate_logs: bool = True
 
     class Config:
         env_file = ".env"
@@ -126,11 +125,8 @@ def insert_with_retry(db: Session, records: List[dict]):
 
 async def log_predictions(records: List[dict], db: Session):
     inicio = time.time()
-    print('Iniciando log...')
     try:
         insert_with_retry(db, records)
-        fim = time.time()
-        print(f'Tempo de log: {fim - inicio} segundos')
     except Exception as e:
         print(f'Erro ao inserir logs: {str(e)}')
         raise e
@@ -152,16 +148,13 @@ class SinglePrediction(BaseSettings):
 async def predict_single(
     background_tasks: BackgroundTasks,
     transactions: UploadFile = File(...),
+    generate_logs: bool = Query(True, description="Whether to generate logs for this prediction"),
     db = Depends(get_db),
 ):
-    print('Iniciando predição única...')
-    df_payers = pd.read_feather('data/payers.feather')
-    df_sellers = pd.read_feather('data/seller.feather')
+    df_payers = pd.read_feather('data/payers-v1.feather')
+    df_sellers = pd.read_feather('data/seller_terminals-v1.feather')
     df_old_transactions = pd.read_feather('data/transactions_train-v1.feather')
     df_txns = await read_feather_file(transactions)
-
-    print('Colunas do df_payers:', df_payers.columns.tolist())
-    print('Colunas do df_txns:', df_txns.columns.tolist())
 
     df_old_transactions['tx_datetime'] = pd.to_datetime(df_old_transactions['tx_datetime'])
     df_txns['tx_datetime'] = pd.to_datetime(df_txns['tx_datetime'])
@@ -174,12 +167,9 @@ async def predict_single(
         if col not in df_txns.columns:
             df_txns[col] = None
 
-    print('Concatenando datasets...')
     df_merged = pd.concat([df_old_transactions, df_txns], ignore_index=True)
     df_merged = df_merged.sort_values('tx_datetime')
-    print('Dataset concatenado e ordenado')
 
-    print('Processando dataset...')
     df_proc = process_dataset(df_payers, df_sellers, df_merged)
     df_proc.to_csv('df_proc.csv')
 
@@ -190,7 +180,6 @@ async def predict_single(
     existing_columns = [col for col in to_drop if col in df_new_txns.columns]
     if existing_columns:
         df_new_txns = df_new_txns.drop(columns=existing_columns)
-    print('Dataset processado')
 
     if df_new_txns.shape[0] != 1:
         raise HTTPException(400, "Espere exatamente 1 transação para /single")
@@ -199,18 +188,6 @@ async def predict_single(
     fraud_probability = float(probabilities[1])
     
     pred = 1 if fraud_probability > 0.98 else 0
-
-    total_fraudes = 0
-    total_nao_fraudes = 0
-    if pred == 1:
-        total_fraudes += 1
-    else:
-        total_nao_fraudes += 1
-
-    print(f'Total de fraudes: {total_fraudes}')
-    print(f'Total de nao fraudes: {total_nao_fraudes}')
-    porcentagem_fraudes = (total_fraudes / (total_fraudes + total_nao_fraudes)) * 100
-    print(f'Porcentagem de fraudes: {porcentagem_fraudes:.2f}%')
 
     log_record = {
         "transaction_id": str(df_txns.iloc[0].get("transaction_id", "")),
@@ -221,7 +198,8 @@ async def predict_single(
         "transaction_date": datetime.now(UTC)
     }
     
-    background_tasks.add_task(log_single_prediction, log_record, db)
+    if generate_logs:
+        background_tasks.add_task(log_single_prediction, log_record, db)
 
     return {
         "transaction_id": str(df_txns.iloc[0].get("transaction_id", "")),
@@ -238,16 +216,13 @@ class BatchPredictionResponse(BaseSettings):
 async def predict_batch(
     background_tasks: BackgroundTasks,
     transactions: UploadFile = File(...),
+    generate_logs: bool = Query(True, description="Whether to generate logs for this prediction"),
     db = Depends(get_db),
 ):
-    print('Iniciando predição em lote...')
-    df_payers = pd.read_feather('data/payers.feather')
-    df_sellers = pd.read_feather('data/seller.feather')
+    df_payers = pd.read_feather('data/payers-v1.feather')
+    df_sellers = pd.read_feather('data/seller_terminals-v1.feather')
     df_old_transactions = pd.read_feather('data/transactions_train-v1.feather')
     df_txns = await read_feather_file(transactions)
-
-    print('Colunas do df_payers:', df_payers.columns.tolist())
-    print('Colunas do df_txns:', df_txns.columns.tolist())
 
     df_old_transactions['tx_datetime'] = pd.to_datetime(df_old_transactions['tx_datetime'])
     df_txns['tx_datetime'] = pd.to_datetime(df_txns['tx_datetime'])
@@ -260,12 +235,9 @@ async def predict_batch(
         if col not in df_txns.columns:
             df_txns[col] = None
 
-    print('Concatenando datasets...')
     df_merged = pd.concat([df_old_transactions, df_txns], ignore_index=True)
     df_merged = df_merged.sort_values('tx_datetime')
-    print('Dataset concatenado e ordenado')
 
-    print('Processando dataset...')
     df_proc = process_dataset(df_payers, df_sellers, df_merged)
     df_proc.to_csv('df_proc.csv')
 
@@ -276,7 +248,6 @@ async def predict_batch(
     existing_columns = [col for col in to_drop if col in df_new_txns.columns]
     if existing_columns:
         df_new_txns = df_new_txns.drop(columns=existing_columns)
-    print('Dataset processado')
 
     X = df_new_txns.drop(columns=['is_fraud', 'is_transactional_fraud'])
     
@@ -286,30 +257,37 @@ async def predict_batch(
     threshold = 0.1
     preds = (fraud_probabilities > threshold).astype(int)
 
-    records = []
-    total_fraudes = 0
-    total_nao_fraudes = 0
-    for i, tx_id in enumerate(df_txns['transaction_id']):
-        log_record = {
-            "transaction_id": str(tx_id),
-            "prediction": int(preds[i]),
-            "probability": float(fraud_probabilities[i]),
-            "is_fraud": bool(preds[i]),
-            "is_batch": True,
-            "transaction_date": datetime.now(UTC)
-        }
-        records.append(log_record)
-        if preds[i] == 1:
-            total_fraudes += 1
-        else:
-            total_nao_fraudes += 1
+    if settings.generate_csv:
+        results_df = pd.DataFrame({
+            'transaction_id': df_txns['transaction_id'],
+            'is_fraud': preds
+        })
+        results_df.to_csv('predictions.csv', index=False)
 
-    print(f'Total de fraudes: {total_fraudes}')
-    print(f'Total de nao fraudes: {total_nao_fraudes}')
-    porcentagem_fraudes = (total_fraudes / (total_fraudes + total_nao_fraudes)) * 100
-    print(f'Porcentagem de fraudes: {porcentagem_fraudes:.2f}%')
+    if generate_logs:
+        records = []
+        total_fraudes = 0
+        total_nao_fraudes = 0
+        for i, tx_id in enumerate(df_txns['transaction_id']):
+            log_record = {
+                "transaction_id": str(tx_id),
+                "prediction": int(preds[i]),
+                "probability": float(fraud_probabilities[i]),
+                "is_fraud": bool(preds[i]),
+                "is_batch": True,
+                "transaction_date": datetime.now(UTC)
+            }
+            records.append(log_record)
+            if preds[i] == 1:
+                total_fraudes += 1
+            else:
+                total_nao_fraudes += 1
 
-    background_tasks.add_task(log_predictions, records, db)
+        print(f'Total de fraudes: {total_fraudes}')
+        print(f'Total de nao fraudes: {total_nao_fraudes}')
+        porcentagem_fraudes = (total_fraudes / (total_fraudes + total_nao_fraudes)) * 100
+        print(f'Porcentagem de fraudes: {porcentagem_fraudes:.2f}%')
+        background_tasks.add_task(log_predictions, records, db)
 
     return {
         "message": "Predictions are being processed and logged in the background",

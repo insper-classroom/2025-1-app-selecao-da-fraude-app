@@ -1,0 +1,5 @@
+outs:
+- md5: e393087ea417c015c06a22ad8fef41d0
+  size: 18976894
+  hash: md5
+  path: xgb_smote_model.pkl
