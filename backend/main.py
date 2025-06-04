@@ -294,11 +294,29 @@ async def predict_batch(
         "total_transactions": len(df_txns)
     }
 
-@app.get("/logs")
+class LogResponse(BaseSettings):
+    id: int
+    transaction_id: str
+    prediction: int
+    probability: float
+    is_fraud: bool
+    is_batch: bool
+    created_at: datetime
+    transaction_date: datetime
+
+class PaginatedLogsResponse(BaseSettings):
+    logs: List[LogResponse]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+@app.get("/logs", response_model=PaginatedLogsResponse)
 async def get_logs(
     start_date: Optional[datetime] = Query(None, description="Start date for filtering logs"),
     end_date: Optional[datetime] = Query(None, description="End date for filtering logs"),
-    limit: int = Query(100, ge=1, le=1000, description="Maximum number of logs to return"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(50, ge=1, le=100, description="Number of items per page"),
     db = Depends(get_db),
 ):
     query = db.query(Log)
@@ -308,21 +326,35 @@ async def get_logs(
     if end_date:
         query = query.filter(Log.transaction_date <= end_date)
     
-    logs = query.order_by(Log.transaction_date.desc()).limit(limit).all()
+    # Get total count for pagination
+    total = query.count()
     
-    return [
-        {
-            "id": log.id,
-            "transaction_id": log.transaction_id,
-            "prediction": log.prediction,
-            "probability": log.probability,
-            "is_fraud": log.is_fraud,
-            "is_batch": log.is_batch,
-            "created_at": log.created_at,
-            "transaction_date": log.transaction_date
-        }
-        for log in logs
-    ]
+    # Calculate pagination
+    total_pages = (total + page_size - 1) // page_size
+    offset = (page - 1) * page_size
+    
+    # Get paginated results
+    logs = query.order_by(Log.transaction_date.desc()).offset(offset).limit(page_size).all()
+    
+    return {
+        "logs": [
+            {
+                "id": log.id,
+                "transaction_id": log.transaction_id,
+                "prediction": log.prediction,
+                "probability": log.probability,
+                "is_fraud": log.is_fraud,
+                "is_batch": log.is_batch,
+                "created_at": log.created_at,
+                "transaction_date": log.transaction_date
+            }
+            for log in logs
+        ],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages
+    }
 
 if __name__ == "__main__":
     import uvicorn
