@@ -34,12 +34,13 @@ jobs:
         username: ${{ secrets.EC2_USER }}
         key: ${{ secrets.EC2_SSH_KEY }}
         script: |
-          sudo docker pull ${{ secrets.DOCKERHUB_USERNAME }}/meli-api:latest
-
-          sudo docker network create -d bridge meli-network || true
-
           sudo docker stop meli-api || true
           sudo docker rm   meli-api || true
+          docker system prune -a --volumes -f
+
+          sudo docker pull ${{ secrets.DOCKERHUB_USERNAME }}/meli-api:latest
+          sudo docker network create -d bridge meli-network || true
+
 
           sudo docker run -d \
             --name meli-api \
