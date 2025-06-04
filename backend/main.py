@@ -52,9 +52,6 @@ class Settings(BaseSettings):
 settings = Settings()
 
 def ensure_table_exists(engine):
-    """
-    Verifica se a tabela existe e a cria se necessário.
-    """
     inspector = inspect(engine)
     if not inspector.has_table("logs"):
         Base.metadata.create_all(bind=engine)
@@ -64,7 +61,6 @@ def ensure_table_exists(engine):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Create database engine with connection pooling
     engine = create_engine(
         settings.postgres_uri,
         poolclass=QueuePool,
@@ -74,32 +70,28 @@ async def lifespan(app: FastAPI):
         pool_recycle=1800
     )
     
-    # Ensure table exists
     try:
         ensure_table_exists(engine)
     except Exception as e:
         print(f"Error ensuring table exists: {str(e)}")
         raise e
     
-    # Create session factory
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     app.db = SessionLocal()
     
     yield
     
-    # Close database connection
     app.db.close()
     engine.dispose()
 
 app = FastAPI(title="Meli Selecao da Fraude API", lifespan=lifespan)
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 def get_db():
@@ -123,9 +115,6 @@ async def read_feather_file(file: UploadFile) -> pd.DataFrame:
     max_time=30
 )
 def insert_with_retry(db: Session, records: List[dict]):
-    """
-    Insere registros com retry logic usando backoff.
-    """
     try:
         for record in records:
             log = Log(**record)
@@ -136,9 +125,6 @@ def insert_with_retry(db: Session, records: List[dict]):
         raise e
 
 async def log_predictions(records: List[dict], db: Session):
-    """
-    Insere registros em lote com retry logic.
-    """
     inicio = time.time()
     print('Iniciando log...')
     try:
@@ -150,9 +136,6 @@ async def log_predictions(records: List[dict], db: Session):
         raise e
 
 async def log_single_prediction(record: dict, db: Session):
-    """
-    Insere um único registro com retry logic.
-    """
     try:
         insert_with_retry(db, [record])
     except Exception as e:
@@ -180,20 +163,17 @@ async def predict_single(
     print('Colunas do df_payers:', df_payers.columns.tolist())
     print('Colunas do df_txns:', df_txns.columns.tolist())
 
-    # Sort both dataframes by datetime
     df_old_transactions['tx_datetime'] = pd.to_datetime(df_old_transactions['tx_datetime'])
     df_txns['tx_datetime'] = pd.to_datetime(df_txns['tx_datetime'])
     
     df_old_transactions = df_old_transactions.sort_values('tx_datetime')
     df_txns = df_txns.sort_values('tx_datetime')
 
-    # Handle missing columns by filling with appropriate values
     missing_cols = ['is_transactional_fraud', 'is_fraud', 'tx_fraud_report_date']
     for col in missing_cols:
         if col not in df_txns.columns:
             df_txns[col] = None
 
-    # Merge transactions and sort by datetime
     print('Concatenando datasets...')
     df_merged = pd.concat([df_old_transactions, df_txns], ignore_index=True)
     df_merged = df_merged.sort_values('tx_datetime')
@@ -203,12 +183,10 @@ async def predict_single(
     df_proc = process_dataset(df_payers, df_sellers, df_merged)
     df_proc.to_csv('df_proc.csv')
 
-    # Split to get only new transactions
     df_new_txns = df_proc[df_proc['transaction_id'].isin(df_txns['transaction_id'])]
 
     to_drop = ['tx_datetime','tx_date','tx_time','tx_fraud_report_date','card_first_transaction',
                'terminal_operation_start', 'terminal_soft_descriptor', 'transaction_city', 'card_bin_category', 'transaction_id']
-    # Only drop columns that exist in the DataFrame
     existing_columns = [col for col in to_drop if col in df_new_txns.columns]
     if existing_columns:
         df_new_txns = df_new_txns.drop(columns=existing_columns)
@@ -217,11 +195,9 @@ async def predict_single(
     if df_new_txns.shape[0] != 1:
         raise HTTPException(400, "Espere exatamente 1 transação para /single")
     
-    # Keep as DataFrame for model prediction
     probabilities = model.predict_proba(df_new_txns)[0]
     fraud_probability = float(probabilities[1])
     
-    # Usa um limiar mais alto para reduzir falsos positivos
     pred = 1 if fraud_probability > 0.98 else 0
 
     total_fraudes = 0
@@ -245,7 +221,6 @@ async def predict_single(
         "transaction_date": datetime.now(UTC)
     }
     
-    # Add logging to background tasks
     background_tasks.add_task(log_single_prediction, log_record, db)
 
     return {
@@ -274,20 +249,17 @@ async def predict_batch(
     print('Colunas do df_payers:', df_payers.columns.tolist())
     print('Colunas do df_txns:', df_txns.columns.tolist())
 
-    # Sort both dataframes by datetime
     df_old_transactions['tx_datetime'] = pd.to_datetime(df_old_transactions['tx_datetime'])
     df_txns['tx_datetime'] = pd.to_datetime(df_txns['tx_datetime'])
     
     df_old_transactions = df_old_transactions.sort_values('tx_datetime')
     df_txns = df_txns.sort_values('tx_datetime')
 
-    # Handle missing columns by filling with appropriate values
     missing_cols = ['is_transactional_fraud', 'is_fraud', 'tx_fraud_report_date']
     for col in missing_cols:
         if col not in df_txns.columns:
             df_txns[col] = None
 
-    # Merge transactions and sort by datetime
     print('Concatenando datasets...')
     df_merged = pd.concat([df_old_transactions, df_txns], ignore_index=True)
     df_merged = df_merged.sort_values('tx_datetime')
@@ -297,25 +269,21 @@ async def predict_batch(
     df_proc = process_dataset(df_payers, df_sellers, df_merged)
     df_proc.to_csv('df_proc.csv')
 
-    # Split to get only new transactions
     df_new_txns = df_proc[df_proc['transaction_id'].isin(df_txns['transaction_id'])]
 
     to_drop = ['tx_datetime','tx_date','tx_time','tx_fraud_report_date','card_first_transaction',
                'terminal_operation_start', 'terminal_soft_descriptor', 'transaction_city', 'card_bin_category', 'transaction_id']
-    # Only drop columns that exist in the DataFrame
     existing_columns = [col for col in to_drop if col in df_new_txns.columns]
     if existing_columns:
         df_new_txns = df_new_txns.drop(columns=existing_columns)
     print('Dataset processado')
 
-    # Separate X and y
     X = df_new_txns.drop(columns=['is_fraud', 'is_transactional_fraud'])
     
     probabilities = model.predict_proba(X)
     fraud_probabilities = probabilities[:, 1]
 
     threshold = 0.1
-    # Usa um limiar mais alto para reduzir falsos positivos
     preds = (fraud_probabilities > threshold).astype(int)
 
     records = []
@@ -341,16 +309,7 @@ async def predict_batch(
     porcentagem_fraudes = (total_fraudes / (total_fraudes + total_nao_fraudes)) * 100
     print(f'Porcentagem de fraudes: {porcentagem_fraudes:.2f}%')
 
-    # Add logging to background tasks
     background_tasks.add_task(log_predictions, records, db)
-
-    # Criar DataFrame com resultados e salvar em CSV
-    df_results = pd.DataFrame({
-        'transaction_id': df_txns['transaction_id'],
-        'is_fraud': preds
-    })
-    df_results.to_csv('predictions_results.csv', index=False)
-    print('Resultados salvos em predictions_results.csv')
 
     return {
         "message": "Predictions are being processed and logged in the background",
