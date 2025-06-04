@@ -19,7 +19,7 @@ COPY . .
 
 RUN pip install -r requirements.txt
 
-EXPOSE 8083
+EXPOSE 8080
 
 # Usa envs no container (em tempo de execução)
 CMD bash -c "aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID && \
