@@ -1,0 +1,5 @@
+outs:
+- md5: 1103e38fecc6bca1c3ccfcbce68b6e4d
+  size: 76458
+  hash: md5
+  path: seller_terminals-v1.feather
