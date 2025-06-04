@@ -138,78 +138,79 @@ async def log_single_prediction(record: dict, db: Session):
         print(f'Erro ao inserir log único: {str(e)}')
         raise e
 
-class BatchPredictionResponse(BaseSettings):
-    message: str
-    total_transactions: int
+class SinglePrediction(BaseSettings):
+    transaction_id: str
+    prediction: int
+    probability: float
+    is_fraud: bool
 
-@app.post("/predict/single", response_model=BatchPredictionResponse)
+@app.post("/predict/single", response_model=SinglePrediction)
 async def predict_single(
     background_tasks: BackgroundTasks,
     transactions: UploadFile = File(...),
     generate_logs: bool = Query(True, description="Whether to generate logs for this prediction"),
     db = Depends(get_db),
 ):
+    df_payers = pd.read_feather('data/payers-v1.feather')
+    df_sellers = pd.read_feather('data/seller_terminals-v1.feather')
+    df_old_transactions = pd.read_feather('data/transactions_train-v1.feather')
     df_txns = await read_feather_file(transactions)
+
+    df_old_transactions['tx_datetime'] = pd.to_datetime(df_old_transactions['tx_datetime'])
+    df_txns['tx_datetime'] = pd.to_datetime(df_txns['tx_datetime'])
     
-    if df_txns.shape[0] != 1:
+    df_old_transactions = df_old_transactions.sort_values('tx_datetime')
+    df_txns = df_txns.sort_values('tx_datetime')
+
+    missing_cols = ['is_transactional_fraud', 'is_fraud', 'tx_fraud_report_date']
+    for col in missing_cols:
+        if col not in df_txns.columns:
+            df_txns[col] = None
+
+    df_merged = pd.concat([df_old_transactions, df_txns], ignore_index=True)
+    df_merged = df_merged.sort_values('tx_datetime')
+
+    df_proc = process_dataset(df_payers, df_sellers, df_merged)
+    df_proc.to_csv('df_proc.csv')
+
+    df_new_txns = df_proc[df_proc['transaction_id'].isin(df_txns['transaction_id'])]
+
+    to_drop = ['tx_datetime','tx_date','tx_time','tx_fraud_report_date','card_first_transaction',
+               'terminal_operation_start', 'terminal_soft_descriptor', 'transaction_city', 'card_bin_category', 'transaction_id']
+    existing_columns = [col for col in to_drop if col in df_new_txns.columns]
+    if existing_columns:
+        df_new_txns = df_new_txns.drop(columns=existing_columns)
+
+    if df_new_txns.shape[0] != 1:
         raise HTTPException(400, "Espere exatamente 1 transação para /single")
     
-    # Return quick response
-    response = {
-        "message": "Prediction is being processed and logged in the background",
-        "total_transactions": 1
+    probabilities = model.predict_proba(df_new_txns)[0]
+    fraud_probability = float(probabilities[1])
+    
+    pred = 1 if fraud_probability > 0.98 else 0
+
+    log_record = {
+        "transaction_id": str(df_txns.iloc[0].get("transaction_id", "")),
+        "prediction": int(pred),
+        "probability": fraud_probability,
+        "is_fraud": bool(pred),
+        "is_batch": False,
+        "transaction_date": datetime.now(UTC)
     }
     
-    # Process the rest asynchronously
-    async def process_single_prediction(df_txns: pd.DataFrame):
-        df_payers = pd.read_feather('data/payers-v1.feather')
-        df_sellers = pd.read_feather('data/seller_terminals-v1.feather')
-        df_old_transactions = pd.read_feather('data/transactions_train-v1.feather')
+    if generate_logs:
+        background_tasks.add_task(log_single_prediction, log_record, db)
 
-        df_old_transactions['tx_datetime'] = pd.to_datetime(df_old_transactions['tx_datetime'])
-        df_txns['tx_datetime'] = pd.to_datetime(df_txns['tx_datetime'])
-        
-        df_old_transactions = df_old_transactions.sort_values('tx_datetime')
-        df_txns = df_txns.sort_values('tx_datetime')
+    return {
+        "transaction_id": str(df_txns.iloc[0].get("transaction_id", "")),
+        "prediction": pred,
+        "probability": fraud_probability,
+        "is_fraud": bool(pred)
+    }
 
-        missing_cols = ['is_transactional_fraud', 'is_fraud', 'tx_fraud_report_date']
-        for col in missing_cols:
-            if col not in df_txns.columns:
-                df_txns[col] = None
-
-        df_merged = pd.concat([df_old_transactions, df_txns], ignore_index=True)
-        df_merged = df_merged.sort_values('tx_datetime')
-
-        df_proc = process_dataset(df_payers, df_sellers, df_merged)
-        df_proc.to_csv('df_proc.csv')
-
-        df_new_txns = df_proc[df_proc['transaction_id'].isin(df_txns['transaction_id'])]
-
-        to_drop = ['tx_datetime','tx_date','tx_time','tx_fraud_report_date','card_first_transaction',
-                   'terminal_operation_start', 'terminal_soft_descriptor', 'transaction_city', 'card_bin_category', 'transaction_id']
-        existing_columns = [col for col in to_drop if col in df_new_txns.columns]
-        if existing_columns:
-            df_new_txns = df_new_txns.drop(columns=existing_columns)
-
-        probabilities = model.predict_proba(df_new_txns)[0]
-        fraud_probability = float(probabilities[1])
-        
-        pred = 1 if fraud_probability > 0.98 else 0
-
-        log_record = {
-            "transaction_id": str(df_txns.iloc[0].get("transaction_id", "")),
-            "prediction": int(pred),
-            "probability": fraud_probability,
-            "is_fraud": bool(pred),
-            "is_batch": False,
-            "transaction_date": datetime.now(UTC)
-        }
-        
-        if generate_logs:
-            await log_single_prediction(log_record, db)
-
-    background_tasks.add_task(process_single_prediction, df_txns)
-    return response
+class BatchPredictionResponse(BaseSettings):
+    message: str
+    total_transactions: int
 
 @app.post("/predict/batch", response_model=BatchPredictionResponse)
 async def predict_batch(
@@ -218,112 +219,86 @@ async def predict_batch(
     generate_logs: bool = Query(True, description="Whether to generate logs for this prediction"),
     db = Depends(get_db),
 ):
+    df_payers = pd.read_feather('data/payers-v1.feather')
+    df_sellers = pd.read_feather('data/seller_terminals-v1.feather')
+    df_old_transactions = pd.read_feather('data/transactions_train-v1.feather')
     df_txns = await read_feather_file(transactions)
-    total_transactions = len(df_txns)
+
+    df_old_transactions['tx_datetime'] = pd.to_datetime(df_old_transactions['tx_datetime'])
+    df_txns['tx_datetime'] = pd.to_datetime(df_txns['tx_datetime'])
     
-    # Return quick response
-    response = {
+    df_old_transactions = df_old_transactions.sort_values('tx_datetime')
+    df_txns = df_txns.sort_values('tx_datetime')
+
+    missing_cols = ['is_transactional_fraud', 'is_fraud', 'tx_fraud_report_date']
+    for col in missing_cols:
+        if col not in df_txns.columns:
+            df_txns[col] = None
+
+    df_merged = pd.concat([df_old_transactions, df_txns], ignore_index=True)
+    df_merged = df_merged.sort_values('tx_datetime')
+
+    df_proc = process_dataset(df_payers, df_sellers, df_merged)
+    df_proc.to_csv('df_proc.csv')
+
+    df_new_txns = df_proc[df_proc['transaction_id'].isin(df_txns['transaction_id'])]
+
+    to_drop = ['tx_datetime','tx_date','tx_time','tx_fraud_report_date','card_first_transaction',
+               'terminal_operation_start', 'terminal_soft_descriptor', 'transaction_city', 'card_bin_category', 'transaction_id']
+    existing_columns = [col for col in to_drop if col in df_new_txns.columns]
+    if existing_columns:
+        df_new_txns = df_new_txns.drop(columns=existing_columns)
+
+    X = df_new_txns.drop(columns=['is_fraud', 'is_transactional_fraud'])
+    
+    probabilities = model.predict_proba(X)
+    fraud_probabilities = probabilities[:, 1]
+
+    threshold = 0.1
+    preds = (fraud_probabilities > threshold).astype(int)
+
+    if settings.generate_csv:
+        results_df = pd.DataFrame({
+            'transaction_id': df_txns['transaction_id'],
+            'is_fraud': preds
+        })
+        results_df.to_csv('predictions.csv', index=False)
+
+    if generate_logs:
+        records = []
+        total_fraudes = 0
+        total_nao_fraudes = 0
+        for i, tx_id in enumerate(df_txns['transaction_id']):
+            log_record = {
+                "transaction_id": str(tx_id),
+                "prediction": int(preds[i]),
+                "probability": float(fraud_probabilities[i]),
+                "is_fraud": bool(preds[i]),
+                "is_batch": True,
+                "transaction_date": datetime.now(UTC)
+            }
+            records.append(log_record)
+            if preds[i] == 1:
+                total_fraudes += 1
+            else:
+                total_nao_fraudes += 1
+
+        print(f'Total de fraudes: {total_fraudes}')
+        print(f'Total de nao fraudes: {total_nao_fraudes}')
+        porcentagem_fraudes = (total_fraudes / (total_fraudes + total_nao_fraudes)) * 100
+        print(f'Porcentagem de fraudes: {porcentagem_fraudes:.2f}%')
+        background_tasks.add_task(log_predictions, records, db)
+
+    return {
         "message": "Predictions are being processed and logged in the background",
-        "total_transactions": total_transactions
+        "total_transactions": len(df_txns)
     }
-    
-    # Process the rest asynchronously
-    async def process_batch_prediction(df_txns: pd.DataFrame):
-        df_payers = pd.read_feather('data/payers-v1.feather')
-        df_sellers = pd.read_feather('data/seller_terminals-v1.feather')
-        df_old_transactions = pd.read_feather('data/transactions_train-v1.feather')
 
-        df_old_transactions['tx_datetime'] = pd.to_datetime(df_old_transactions['tx_datetime'])
-        df_txns['tx_datetime'] = pd.to_datetime(df_txns['tx_datetime'])
-        
-        df_old_transactions = df_old_transactions.sort_values('tx_datetime')
-        df_txns = df_txns.sort_values('tx_datetime')
-
-        missing_cols = ['is_transactional_fraud', 'is_fraud', 'tx_fraud_report_date']
-        for col in missing_cols:
-            if col not in df_txns.columns:
-                df_txns[col] = None
-
-        df_merged = pd.concat([df_old_transactions, df_txns], ignore_index=True)
-        df_merged = df_merged.sort_values('tx_datetime')
-
-        df_proc = process_dataset(df_payers, df_sellers, df_merged)
-        df_proc.to_csv('df_proc.csv')
-
-        df_new_txns = df_proc[df_proc['transaction_id'].isin(df_txns['transaction_id'])]
-
-        to_drop = ['tx_datetime','tx_date','tx_time','tx_fraud_report_date','card_first_transaction',
-                   'terminal_operation_start', 'terminal_soft_descriptor', 'transaction_city', 'card_bin_category', 'transaction_id']
-        existing_columns = [col for col in to_drop if col in df_new_txns.columns]
-        if existing_columns:
-            df_new_txns = df_new_txns.drop(columns=existing_columns)
-
-        X = df_new_txns.drop(columns=['is_fraud', 'is_transactional_fraud'])
-        
-        probabilities = model.predict_proba(X)
-        fraud_probabilities = probabilities[:, 1]
-
-        threshold = 0.1
-        preds = (fraud_probabilities > threshold).astype(int)
-
-        if settings.generate_csv:
-            results_df = pd.DataFrame({
-                'transaction_id': df_txns['transaction_id'],
-                'is_fraud': preds
-            })
-            results_df.to_csv('predictions.csv', index=False)
-
-        if generate_logs:
-            records = []
-            total_fraudes = 0
-            total_nao_fraudes = 0
-            for i, tx_id in enumerate(df_txns['transaction_id']):
-                log_record = {
-                    "transaction_id": str(tx_id),
-                    "prediction": int(preds[i]),
-                    "probability": float(fraud_probabilities[i]),
-                    "is_fraud": bool(preds[i]),
-                    "is_batch": True,
-                    "transaction_date": datetime.now(UTC)
-                }
-                records.append(log_record)
-                if preds[i] == 1:
-                    total_fraudes += 1
-                else:
-                    total_nao_fraudes += 1
-
-            print(f'Total de fraudes: {total_fraudes}')
-            print(f'Total de nao fraudes: {total_nao_fraudes}')
-            porcentagem_fraudes = (total_fraudes / (total_fraudes + total_nao_fraudes)) * 100
-            print(f'Porcentagem de fraudes: {porcentagem_fraudes:.2f}%')
-            await log_predictions(records, db)
-
-    background_tasks.add_task(process_batch_prediction, df_txns)
-    return response
-
-class LogResponse(BaseSettings):
-    id: int
-    transaction_id: str
-    prediction: int
-    probability: float
-    is_fraud: bool
-    is_batch: bool
-    created_at: datetime
-    transaction_date: datetime
-
-class PaginatedLogsResponse(BaseSettings):
-    logs: List[LogResponse]
-    total: int
-    page: int
-    page_size: int
-    total_pages: int
-
-@app.get("/logs", response_model=PaginatedLogsResponse)
+@app.get("/logs")
 async def get_logs(
     start_date: Optional[datetime] = Query(None, description="Start date for filtering logs"),
     end_date: Optional[datetime] = Query(None, description="End date for filtering logs"),
-    page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(50, ge=1, le=100, description="Number of items per page"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of logs to return"),
     db = Depends(get_db),
 ):
     query = db.query(Log)
@@ -333,35 +308,21 @@ async def get_logs(
     if end_date:
         query = query.filter(Log.transaction_date <= end_date)
     
-    # Get total count for pagination
-    total = query.count()
+    logs = query.order_by(Log.transaction_date.desc()).limit(limit).all()
     
-    # Calculate pagination
-    total_pages = (total + page_size - 1) // page_size
-    offset = (page - 1) * page_size
-    
-    # Get paginated results
-    logs = query.order_by(Log.transaction_date.desc()).offset(offset).limit(page_size).all()
-    
-    return {
-        "logs": [
-            {
-                "id": log.id,
-                "transaction_id": log.transaction_id,
-                "prediction": log.prediction,
-                "probability": log.probability,
-                "is_fraud": log.is_fraud,
-                "is_batch": log.is_batch,
-                "created_at": log.created_at,
-                "transaction_date": log.transaction_date
-            }
-            for log in logs
-        ],
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "total_pages": total_pages
-    }
+    return [
+        {
+            "id": log.id,
+            "transaction_id": log.transaction_id,
+            "prediction": log.prediction,
+            "probability": log.probability,
+            "is_fraud": log.is_fraud,
+            "is_batch": log.is_batch,
+            "created_at": log.created_at,
+            "transaction_date": log.transaction_date
+        }
+        for log in logs
+    ]
 
 if __name__ == "__main__":
     import uvicorn
