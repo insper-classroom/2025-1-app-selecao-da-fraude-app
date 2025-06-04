@@ -161,7 +161,7 @@ async def predict_single(
     }
     
     # Process the rest asynchronously
-    async def process_single_prediction():
+    async def process_single_prediction(df_txns: pd.DataFrame):
         df_payers = pd.read_feather('data/payers-v1.feather')
         df_sellers = pd.read_feather('data/seller_terminals-v1.feather')
         df_old_transactions = pd.read_feather('data/transactions_train-v1.feather')
@@ -208,7 +208,7 @@ async def predict_single(
         if generate_logs:
             await log_single_prediction(log_record, db)
 
-    background_tasks.add_task(process_single_prediction)
+    background_tasks.add_task(process_single_prediction, df_txns)
     return response
 
 @app.post("/predict/batch", response_model=BatchPredictionResponse)
@@ -228,7 +228,7 @@ async def predict_batch(
     }
     
     # Process the rest asynchronously
-    async def process_batch_prediction():
+    async def process_batch_prediction(df_txns: pd.DataFrame):
         df_payers = pd.read_feather('data/payers-v1.feather')
         df_sellers = pd.read_feather('data/seller_terminals-v1.feather')
         df_old_transactions = pd.read_feather('data/transactions_train-v1.feather')
@@ -298,7 +298,7 @@ async def predict_batch(
             print(f'Porcentagem de fraudes: {porcentagem_fraudes:.2f}%')
             await log_predictions(records, db)
 
-    background_tasks.add_task(process_batch_prediction)
+    background_tasks.add_task(process_batch_prediction, df_txns)
     return response
 
 class LogResponse(BaseSettings):
