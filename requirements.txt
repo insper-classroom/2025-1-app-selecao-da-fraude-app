@@ -1,5 +1,5 @@
 aiobotocore==2.3.4
-botocore==1.38.26
+botocore==1.24.21
 aiohappyeyeballs==2.6.1
 aiohttp==3.12.4
 aiohttp-retry==2.9.1
@@ -17,7 +17,7 @@ atpublic==6.0.1
 attrs==25.3.0
 backoff==2.2.1
 billiard==4.2.1
-boto3==1.20.26
+boto3==1.24.21
 celery==5.5.2
 certifi==2025.4.26
 cffi==1.17.1
