@@ -1,28 +1,36 @@
-import React from 'react';
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
-import { ToastContainer } from 'react-toastify';
-import 'react-toastify/dist/ReactToastify.css';
 
-import Layout from './components/Layout/Layout';
-import Dashboard from './pages/Dashboard/Dashboard';
-import SinglePrediction from './pages/SinglePrediction/SinglePrediction';
-import BatchPrediction from './pages/BatchPrediction/BatchPrediction';
-import LogsViewer from './pages/LogsViewer/LogsViewer';
+import { Toaster } from "@/components/ui/toaster";
+import { Toaster as Sonner } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { BrowserRouter, Routes, Route } from "react-router-dom";
+import Layout from "./components/Layout";
+import Dashboard from "./pages/Dashboard";
+import SingleTransaction from "./pages/SingleTransaction";
+import BatchTransactions from "./pages/BatchTransactions";
+import Logs from "./pages/Logs";
+import NotFound from "./pages/NotFound";
 
-function App() {
-  return (
-    <Router>
-      <ToastContainer position="top-right" autoClose={5000} hideProgressBar={false} />
-      <Layout>
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/single-prediction" element={<SinglePrediction />} />
-          <Route path="/batch-prediction" element={<BatchPrediction />} />
-          <Route path="/logs" element={<LogsViewer />} />
-        </Routes>
-      </Layout>
-    </Router>
-  );
-}
+const queryClient = new QueryClient();
+
+const App = () => (
+  <QueryClientProvider client={queryClient}>
+    <TooltipProvider>
+      <Toaster />
+      <Sonner />
+      <BrowserRouter>
+        <Layout>
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/single-transaction" element={<SingleTransaction />} />
+            <Route path="/batch-transactions" element={<BatchTransactions />} />
+            <Route path="/logs" element={<Logs />} />
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </Layout>
+      </BrowserRouter>
+    </TooltipProvider>
+  </QueryClientProvider>
+);
 
 export default App;
