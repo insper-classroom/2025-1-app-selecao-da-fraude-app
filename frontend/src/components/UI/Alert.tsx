@@ -1,43 +1,59 @@
-import React from 'react';
-import { AlertCircle, CheckCircle, Info, XCircle } from 'lucide-react';
+import * as React from "react"
+import { cva, type VariantProps } from "class-variance-authority"
 
-interface AlertProps {
-  type: 'success' | 'error' | 'warning' | 'info';
-  title?: string;
-  message: string;
-  className?: string;
-}
+import { cn } from "@/lib/utils"
 
-const Alert: React.FC<AlertProps> = ({ type, title, message, className = '' }) => {
-  const icons = {
-    success: <CheckCircle size={20} className="text-ml-success" />,
-    error: <XCircle size={20} className="text-ml-error" />,
-    warning: <AlertCircle size={20} className="text-ml-warning" />,
-    info: <Info size={20} className="text-ml-blue" />,
-  };
+const alertVariants = cva(
+  "relative w-full rounded-lg border p-4 [&>svg~*]:pl-7 [&>svg+div]:translate-y-[-3px] [&>svg]:absolute [&>svg]:left-4 [&>svg]:top-4 [&>svg]:text-foreground",
+  {
+    variants: {
+      variant: {
+        default: "bg-background text-foreground",
+        destructive:
+          "border-destructive/50 text-destructive dark:border-destructive [&>svg]:text-destructive",
+      },
+    },
+    defaultVariants: {
+      variant: "default",
+    },
+  }
+)
 
-  const styles = {
-    success: 'bg-green-50 border-ml-success',
-    error: 'bg-red-50 border-ml-error',
-    warning: 'bg-yellow-50 border-ml-warning',
-    info: 'bg-blue-50 border-ml-blue',
-  };
+const Alert = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement> & VariantProps<typeof alertVariants>
+>(({ className, variant, ...props }, ref) => (
+  <div
+    ref={ref}
+    role="alert"
+    className={cn(alertVariants({ variant }), className)}
+    {...props}
+  />
+))
+Alert.displayName = "Alert"
 
-  return (
-    <div className={`rounded-md border-l-4 p-4 ${styles[type]} ${className}`}>
-      <div className="flex">
-        <div className="flex-shrink-0 mr-3">
-          {icons[type]}
-        </div>
-        <div>
-          {title && <h3 className="text-sm font-medium">{title}</h3>}
-          <div className="text-sm">
-            {message}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
+const AlertTitle = React.forwardRef<
+  HTMLParagraphElement,
+  React.HTMLAttributes<HTMLHeadingElement>
+>(({ className, ...props }, ref) => (
+  <h5
+    ref={ref}
+    className={cn("mb-1 font-medium leading-none tracking-tight", className)}
+    {...props}
+  />
+))
+AlertTitle.displayName = "AlertTitle"
 
-export default Alert;
+const AlertDescription = React.forwardRef<
+  HTMLParagraphElement,
+  React.HTMLAttributes<HTMLParagraphElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn("text-sm [&_p]:leading-relaxed", className)}
+    {...props}
+  />
+))
+AlertDescription.displayName = "AlertDescription"
+
+export { Alert, AlertTitle, AlertDescription }
