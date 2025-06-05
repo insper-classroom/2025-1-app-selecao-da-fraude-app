@@ -156,11 +156,8 @@ async def predict_single(
     df_old_transactions = pd.read_feather('data/transactions_train-v1.feather')
     df_txns = await read_feather_file(transactions)
 
-    card_id = df_txns['card_id'].iloc[0]
-    terminal_id = df_txns['terminal_id'].iloc[0]
-    
-    df_payers = df_payers[df_payers['card_hash'] == card_id]
-    df_sellers = df_sellers[df_sellers['terminal_id'] == terminal_id]
+    if len(df_txns) > 1:
+        raise HTTPException(status_code=400, detail="Only one transaction is allowed")
 
     df_old_transactions['tx_datetime'] = pd.to_datetime(df_old_transactions['tx_datetime'])
     df_txns['tx_datetime'] = pd.to_datetime(df_txns['tx_datetime'])
@@ -186,31 +183,30 @@ async def predict_single(
     if existing_columns:
         df_new_txns = df_new_txns.drop(columns=existing_columns)
 
-    if df_new_txns.shape[0] != 1:
-        raise HTTPException(400, "Espere exatamente 1 transação para /single")
+    X = df_new_txns.drop(columns=['is_fraud', 'is_transactional_fraud'])
     
-    probabilities = model.predict_proba(df_new_txns)[0]
-    fraud_probability = float(probabilities[1])
-    
-    pred = 1 if fraud_probability > 0.98 else 0
+    probabilities = model.predict_proba(X)
+    fraud_probabilities = probabilities[:, 1]
 
-    log_record = {
-        "transaction_id": str(df_txns.iloc[0].get("transaction_id", "")),
-        "prediction": int(pred),
-        "probability": fraud_probability,
-        "is_fraud": bool(pred),
-        "is_batch": False,
-        "transaction_date": datetime.now(UTC)
-    }
-    
+    threshold = 0.1
+    preds = (fraud_probabilities > threshold).astype(int)
+
     if generate_logs:
+        log_record = {
+            "transaction_id": str(df_txns['transaction_id'].iloc[0]),
+            "prediction": int(preds[0]),
+            "probability": float(fraud_probabilities[0]),
+            "is_fraud": bool(preds[0]),
+            "is_batch": False,
+            "transaction_date": df_txns['tx_datetime'].iloc[0]
+        }
         background_tasks.add_task(log_single_prediction, log_record, db)
 
     return {
-        "transaction_id": str(df_txns.iloc[0].get("transaction_id", "")),
-        "prediction": pred,
-        "probability": fraud_probability,
-        "is_fraud": bool(pred)
+        "transaction_id": str(df_txns['transaction_id'].iloc[0]),
+        "prediction": int(preds[0]),
+        "probability": float(fraud_probabilities[0]),
+        "is_fraud": bool(preds[0]),
     }
 
 class BatchPredictionResponse(BaseSettings):
@@ -270,8 +266,6 @@ async def predict_batch(
 
     if generate_logs:
         records = []
-        total_fraudes = 0
-        total_nao_fraudes = 0
         for i, tx_id in enumerate(df_txns['transaction_id']):
             log_record = {
                 "transaction_id": str(tx_id),
@@ -282,15 +276,6 @@ async def predict_batch(
                 "transaction_date": datetime.now(UTC)
             }
             records.append(log_record)
-            if preds[i] == 1:
-                total_fraudes += 1
-            else:
-                total_nao_fraudes += 1
-
-        print(f'Total de fraudes: {total_fraudes}')
-        print(f'Total de nao fraudes: {total_nao_fraudes}')
-        porcentagem_fraudes = (total_fraudes / (total_fraudes + total_nao_fraudes)) * 100
-        print(f'Porcentagem de fraudes: {porcentagem_fraudes:.2f}%')
         background_tasks.add_task(log_predictions, records, db)
 
     return {
