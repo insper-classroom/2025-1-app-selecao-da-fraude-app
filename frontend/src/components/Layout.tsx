@@ -140,7 +140,7 @@ const Layout = ({ children }: LayoutProps) => {
               <span className="text-lg font-semibold text-slate-800">Seleção da Fraude</span>
             </div>
             <p className="text-slate-600 text-sm">
-              © 2024 Mercado Livre - Sistema de Análise de Fraudes
+              © 2025 Mercado Livre - Sistema de Análise de Fraudes
             </p>
           </div>
         </div>
