@@ -84,6 +84,7 @@ python main.py
 cd frontend
 
 # 2. Instale as dependências
+npm install -g bun
 bun install
 
 # 3. Execute o servidor de desenvolvimento
