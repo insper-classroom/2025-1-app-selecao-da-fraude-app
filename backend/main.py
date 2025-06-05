@@ -156,6 +156,12 @@ async def predict_single(
     df_old_transactions = pd.read_feather('data/transactions_train-v1.feather')
     df_txns = await read_feather_file(transactions)
 
+    card_id = df_txns['card_id'].iloc[0]
+    terminal_id = df_txns['terminal_id'].iloc[0]
+    
+    df_payers = df_payers[df_payers['card_hash'] == card_id]
+    df_sellers = df_sellers[df_sellers['terminal_id'] == terminal_id]
+
     df_old_transactions['tx_datetime'] = pd.to_datetime(df_old_transactions['tx_datetime'])
     df_txns['tx_datetime'] = pd.to_datetime(df_txns['tx_datetime'])
     
@@ -307,14 +313,11 @@ async def get_logs(
     if end_date:
         query = query.filter(Log.transaction_date <= end_date)
     
-    # Get total count for pagination
     total = query.count()
     
-    # Calculate pagination
     total_pages = (total + page_size - 1) // page_size
     offset = (page - 1) * page_size
     
-    # Get paginated results
     logs = query.order_by(Log.transaction_date.desc()).offset(offset).limit(page_size).all()
     
     return {
